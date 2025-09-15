@@ -570,6 +570,228 @@ class RasterGridWithPOIs(RasterGrid):
 
         return img
 
+    def to_console(
+        self,
+        char_map: Dict[str, str] | None = None,
+        color_map: Dict[str, Tuple[Tuple[int, int, int], Tuple[int, int, int]]] | None = None,
+        console: tcod.console.Console | None = None,
+        scale: int = 1,
+        show_pois: bool = True,
+        poi_char: str = '@',
+        poi_color: Tuple[int, int, int] = (255, 255, 0),
+        path: Tuple[np.ndarray, np.ndarray] | None = None,
+        path_char: str = '*',
+        path_color: Tuple[int, int, int] = (255, 215, 0),
+        use_box_drawing: bool = True,
+    ) -> tcod.console.Console:
+        """
+        Convert the raster grid with POIs to a tcod console for ASCII rendering.
+
+        Parameters
+        ----------
+        char_map : Dict[str, str], optional
+            Mapping from legend keys to ASCII characters.
+        color_map : Dict[str, Tuple[Tuple[int, int, int], Tuple[int, int, int]]], optional
+            Mapping from legend keys to (foreground, background) RGB color tuples.
+        console : tcod.console.Console, optional
+            Existing console to render to. If None, creates a new console.
+        scale : int, default 1
+            Downsampling factor for large grids.
+        show_pois : bool, default True
+            Whether to overlay POIs on the grid.
+        poi_char : str, default '@'
+            Character to use for POI markers.
+        poi_color : Tuple[int, int, int], default (255, 255, 0)
+            RGB color for POI markers (yellow).
+        path : Tuple[np.ndarray, np.ndarray], optional
+            Path to overlay as (row_indices, col_indices).
+        path_char : str, default '*'
+            Character for path cells (if not using box drawing).
+        path_color : Tuple[int, int, int], default (255, 215, 0)
+            RGB color for path (gold).
+        use_box_drawing : bool, default True
+            Use box-drawing characters for paths (└, ┘, ┌, ┐, ─, │, ┼, etc).
+
+        Returns
+        -------
+        tcod.console.Console
+            Console object with the rendered grid, POIs, and optional path.
+
+        Examples
+        --------
+        >>> rgp = RasterGridWithPOIs.load("venice_data")
+        >>> console = rgp.to_console(show_pois=True)
+        >>> # With path
+        >>> path_r, path_c = rgp.compute_path_between_POIs("POI_A", "POI_B")
+        >>> console = rgp.to_console(path=(path_r, path_c))
+        """
+        # Get base console from parent class
+        console = super().to_console(char_map, color_map, console, scale)
+        
+        # Apply scale to coordinates
+        scale_factor = scale
+        
+        # Overlay path first (so POIs appear on top)
+        if path is not None and len(path[0]) > 0:
+            path_r, path_c = path
+            self._overlay_path_on_console(
+                console, path_r, path_c, scale_factor, 
+                path_char, path_color, use_box_drawing
+            )
+        
+        # Overlay POIs
+        if show_pois and self.POI_gdf is not None and len(self.POI_gdf) > 0:
+            self._overlay_pois_on_console(console, scale_factor, poi_char, poi_color)
+        
+        return console
+
+    def _overlay_pois_on_console(
+        self,
+        console: tcod.console.Console,
+        scale: int,
+        poi_char: str,
+        poi_color: Tuple[int, int, int],
+    ):
+        """
+        Overlay POI markers on the console.
+
+        Parameters
+        ----------
+        console : tcod.console.Console
+            Console to modify in place.
+        scale : int
+            Downsampling factor.
+        poi_char : str
+            Character for POI markers.
+        poi_color : Tuple[int, int, int]
+            RGB color for POI markers.
+        """
+        # Use adjusted coordinates if available
+        row_col = 'row_adj' if 'row_adj' in self.POI_gdf.columns else 'row'
+        col_col = 'col_adj' if 'col_adj' in self.POI_gdf.columns else 'col'
+        
+        for _, poi in self.POI_gdf.iterrows():
+            r = int(poi[row_col] // scale)
+            c = int(poi[col_col] // scale)
+            
+            # Check bounds
+            if 0 <= c < console.width and 0 <= r < console.height:
+                console.ch[c, r] = ord(poi_char)
+                console.fg[c, r] = poi_color
+                # Keep existing background color
+
+    def _overlay_path_on_console(
+        self,
+        console: tcod.console.Console,
+        path_r: np.ndarray,
+        path_c: np.ndarray,
+        scale: int,
+        path_char: str,
+        path_color: Tuple[int, int, int],
+        use_box_drawing: bool,
+    ):
+        """
+        Overlay a path on the console using characters or box-drawing.
+
+        Parameters
+        ----------
+        console : tcod.console.Console
+            Console to modify in place.
+        path_r, path_c : np.ndarray
+            Row and column indices of the path.
+        scale : int
+            Downsampling factor.
+        path_char : str
+            Character for simple path rendering.
+        path_color : Tuple[int, int, int]
+            RGB color for the path.
+        use_box_drawing : bool
+            Whether to use box-drawing characters.
+        """
+        if len(path_r) == 0:
+            return
+        
+        # Scale path coordinates
+        scaled_path_r = path_r // scale
+        scaled_path_c = path_c // scale
+        
+        if not use_box_drawing:
+            # Simple path rendering
+            for r, c in zip(scaled_path_r, scaled_path_c):
+                if 0 <= c < console.width and 0 <= r < console.height:
+                    console.ch[c, r] = ord(path_char)
+                    console.fg[c, r] = path_color
+        else:
+            # Box-drawing characters for paths
+            box_chars = {
+                'horizontal': '─',
+                'vertical': '│',
+                'corner_tl': '┌',  # top-left
+                'corner_tr': '┐',  # top-right
+                'corner_bl': '└',  # bottom-left
+                'corner_br': '┘',  # bottom-right
+                'cross': '┼',
+                't_down': '┬',
+                't_up': '┴',
+                't_right': '├',
+                't_left': '┤',
+            }
+            
+            # Process each path segment
+            for i in range(len(scaled_path_r)):
+                r, c = scaled_path_r[i], scaled_path_c[i]
+                
+                if not (0 <= c < console.width and 0 <= r < console.height):
+                    continue
+                
+                # Determine direction based on neighbors
+                char = path_char  # default
+                
+                if i == 0:
+                    # Start of path
+                    char = '●'
+                elif i == len(scaled_path_r) - 1:
+                    # End of path
+                    char = '◎'
+                else:
+                    # Determine path direction
+                    prev_r, prev_c = scaled_path_r[i-1], scaled_path_c[i-1]
+                    next_r, next_c = scaled_path_r[i+1], scaled_path_c[i+1]
+                    
+                    dr_prev = r - prev_r
+                    dc_prev = c - prev_c
+                    dr_next = next_r - r
+                    dc_next = next_c - c
+                    
+                    # Straight segments
+                    if dr_prev == dr_next and dc_prev == dc_next:
+                        if dr_prev == 0:
+                            char = box_chars['horizontal']
+                        elif dc_prev == 0:
+                            char = box_chars['vertical']
+                    # Corners
+                    elif dr_prev == 0 and dc_next == 0:
+                        if dc_prev > 0 and dr_next > 0:
+                            char = box_chars['corner_tr']
+                        elif dc_prev > 0 and dr_next < 0:
+                            char = box_chars['corner_br']
+                        elif dc_prev < 0 and dr_next > 0:
+                            char = box_chars['corner_tl']
+                        elif dc_prev < 0 and dr_next < 0:
+                            char = box_chars['corner_bl']
+                    elif dc_prev == 0 and dr_next == 0:
+                        if dr_prev > 0 and dc_next > 0:
+                            char = box_chars['corner_bl']
+                        elif dr_prev > 0 and dc_next < 0:
+                            char = box_chars['corner_br']
+                        elif dr_prev < 0 and dc_next > 0:
+                            char = box_chars['corner_tl']
+                        elif dr_prev < 0 and dc_next < 0:
+                            char = box_chars['corner_tr']
+                
+                console.ch[c, r] = ord(char)
+                console.fg[c, r] = path_color
+
 
 
     ####### Private Methods

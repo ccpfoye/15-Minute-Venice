@@ -3,6 +3,8 @@ from affine import Affine
 import geopandas as gpd
 from typing import Dict, Tuple
 from PIL import Image
+import tcod
+import tcod.console
 
 from .utils.grid_utils import instantiate_grid_and_transform, rasterize_geoms
 from .utils.courtyard_utils import add_auto_courtyards
@@ -220,3 +222,131 @@ class RasterGrid:
             img = img.resize((cols * scale, rows * scale), resample=Image.Resampling.NEAREST)
 
         return img
+
+    def to_console(
+        self,
+        char_map: Dict[str, str] | None = None,
+        color_map: Dict[str, Tuple[Tuple[int, int, int], Tuple[int, int, int]]] | None = None,
+        console: tcod.console.Console | None = None,
+        scale: int = 1,
+    ) -> tcod.console.Console:
+        """
+        Convert the raster grid to a tcod console for ASCII rendering.
+
+        Parameters
+        ----------
+        char_map : Dict[str, str], optional
+            Mapping from legend keys to ASCII characters.
+            Default: {'ocean': '~', 'street': '.', 'building': '#', 'canal': '≈', 'courtyard': ' '}
+        color_map : Dict[str, Tuple[Tuple[int, int, int], Tuple[int, int, int]]], optional
+            Mapping from legend keys to (foreground, background) RGB color tuples.
+            Default uses themed colors for each terrain type.
+        console : tcod.console.Console, optional
+            Existing console to render to. If None, creates a new console.
+        scale : int, default 1
+            Downsampling factor for large grids. 1 = no downsampling,
+            2 = every other cell, etc.
+
+        Returns
+        -------
+        tcod.console.Console
+            Console object with the rendered grid.
+
+        Examples
+        --------
+        >>> raster_grid = RasterGrid.load("venice.npz")
+        >>> console = raster_grid.to_console()
+        >>> # Custom characters
+        >>> console = raster_grid.to_console(char_map={'ocean': '~', 'street': '·'})
+        """
+        if scale < 1 or not isinstance(scale, int):
+            raise ValueError("scale must be a positive integer")
+
+        # Default character mappings
+        default_char_map = {
+            'ocean': '~',
+            'street': '.',
+            'building': '#',
+            'canal': '≈',
+            'courtyard': ' ',
+        }
+        if char_map is not None:
+            default_char_map.update(char_map)
+        char_map = default_char_map
+
+        # Default color mappings (foreground, background)
+        default_color_map = {
+            'ocean': ((100, 150, 200), (20, 40, 60)),     # Light blue on dark blue
+            'street': ((180, 180, 180), (50, 50, 50)),    # Light grey on dark grey
+            'building': ((150, 50, 50), (100, 30, 30)),   # Light red on dark red
+            'canal': ((64, 224, 208), (20, 80, 80)),      # Turquoise on dark teal
+            'courtyard': ((100, 200, 100), (30, 60, 30)), # Light green on dark green
+        }
+        if color_map is not None:
+            default_color_map.update(color_map)
+        color_map = default_color_map
+
+        # Downsample if needed
+        grid = self.grid[::scale, ::scale] if scale > 1 else self.grid
+        rows, cols = grid.shape
+
+        # Create or use existing console
+        if console is None:
+            console = tcod.console.Console(width=cols, height=rows, order='F')
+
+        # Create reverse legend mapping (value -> key)
+        value_to_key = {v: k for k, v in self.legend.items()}
+
+        # Fill console with characters and colors
+        for r in range(min(rows, console.height)):
+            for c in range(min(cols, console.width)):
+                cell_value = grid[r, c]
+                terrain_key = value_to_key.get(cell_value, 'ocean')
+                
+                # Get character
+                char = char_map.get(terrain_key, '?')
+                
+                # Get colors
+                fg_color, bg_color = color_map.get(terrain_key, ((255, 255, 255), (0, 0, 0)))
+                
+                # Set console cell
+                console.ch[c, r] = ord(char)
+                console.fg[c, r] = fg_color
+                console.bg[c, r] = bg_color
+
+        return console
+
+    def _create_char_grid(self, char_map: Dict[str, str] | None = None) -> np.ndarray:
+        """
+        Convert numeric grid to character array.
+
+        Parameters
+        ----------
+        char_map : Dict[str, str], optional
+            Mapping from legend keys to ASCII characters.
+
+        Returns
+        -------
+        np.ndarray
+            2D array of characters (dtype='U1').
+        """
+        default_char_map = {
+            'ocean': '~',
+            'street': '.',
+            'building': '#',
+            'canal': '≈',
+            'courtyard': ' ',
+        }
+        if char_map is not None:
+            default_char_map.update(char_map)
+        
+        # Create reverse legend mapping
+        value_to_key = {v: k for k, v in self.legend.items()}
+        
+        # Create character grid
+        char_grid = np.full(self.grid.shape, '?', dtype='U1')
+        for value, key in value_to_key.items():
+            char = default_char_map.get(key, '?')
+            char_grid[self.grid == value] = char
+        
+        return char_grid

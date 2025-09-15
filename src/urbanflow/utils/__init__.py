@@ -1,2 +1,2 @@
 from .sommarioni_utils import load_sommarioni_layers
-from .raster_utils import raster_to_GeoDataFrame
+from .raster_utils import raster_to_geo_data_frame
